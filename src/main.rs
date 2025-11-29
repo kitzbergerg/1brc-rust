@@ -12,12 +12,26 @@ use std::{
 
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-#[derive(Default)]
 struct Weather {
-    total: usize,
-    min: f32,
-    max: f32,
-    sum: f32,
+    total: u32,
+    min: i16,
+    max: i16,
+    sum: i64,
+}
+
+#[inline(always)]
+fn parse_temp(t: &[u8]) -> i16 {
+    let t_len = t.len();
+    unsafe { std::hint::assert_unchecked(t_len >= 3) };
+    let is_neg = std::hint::select_unpredictable(t[0] == b'-', true, false);
+    let sign = i16::from(!is_neg) * 2 - 1;
+    let skip = usize::from(is_neg);
+    let has_dd = std::hint::select_unpredictable(t_len - skip == 4, true, false);
+    let mul = i16::from(has_dd) * 90 + 10;
+    let t1 = mul * i16::from(t[skip] - b'0');
+    let t2 = i16::from(has_dd) * 10 * i16::from(t[t_len - 3] - b'0');
+    let t3 = i16::from(t[t_len - 1] - b'0');
+    sign * (t1 + t2 + t3)
 }
 
 fn open_reader(file: &str) -> &[u8] {
@@ -51,45 +65,46 @@ fn parse<'a>(data: &'a [u8]) -> fxhash::FxHashMap<&'a [u8], Weather> {
     let mut prev = 0;
     let mut pos = 0;
     let (chunks, remainder) = data.as_chunks();
-    chunks
+
+    let iter = chunks
         .iter()
         .map(|chunk| Simd::from_array(*chunk))
         .chain([Simd::load_or_default(remainder)])
         .map(|chunk| chunk.simd_eq(SIMD_NEWLINE) | chunk.simd_eq(SIMD_DELIM))
-        .map(Mask::to_bitmask)
-        .flat_map(|mask| {
-            let v = extract_fields(data, &mut prev, pos, mask);
-            pos += CHUNK_SIZE;
-            v
-        })
-        .array_chunks()
-        .map(|[station, measurement]| {
-            (
-                station,
-                unsafe { std::str::from_utf8_unchecked(measurement) }
-                    .parse::<f32>()
-                    .unwrap(),
-            )
-        })
-        .fold(
-            fxhash::FxHashMap::<&'a [u8], Weather>::default(),
-            |mut acc, (station, measurement)| {
-                acc.entry(station)
-                    .and_modify(|entry| {
-                        entry.total += 1;
-                        entry.min = entry.min.min(measurement);
-                        entry.max = entry.max.max(measurement);
-                        entry.sum += measurement;
-                    })
-                    .or_insert(Weather {
-                        total: 1,
-                        min: measurement,
-                        max: measurement,
-                        sum: measurement,
-                    });
-                acc
-            },
-        )
+        .map(Mask::to_bitmask);
+
+    let mut map = fxhash::FxHashMap::<&'a [u8], Weather>::default();
+    let mut tmp = [Default::default(); 32];
+    let mut count = 0;
+    for mask in iter {
+        extract_fields(data, &mut prev, pos, mask, &mut tmp, &mut count);
+        pos += CHUNK_SIZE;
+
+        for i in 0..count / 2 {
+            let station = tmp[2 * i];
+            let measurement = parse_temp(tmp[2 * i + 1]);
+            map.entry(station)
+                .and_modify(|entry| {
+                    entry.total += 1;
+                    entry.min = entry.min.min(measurement);
+                    entry.max = entry.max.max(measurement);
+                    entry.sum += measurement as i64;
+                })
+                .or_insert(Weather {
+                    total: 1,
+                    min: measurement,
+                    max: measurement,
+                    sum: measurement as i64,
+                });
+        }
+
+        let is_odd = count % 2 == 1;
+        if is_odd {
+            tmp[0] = tmp[count - 1];
+        }
+        count = usize::from(is_odd);
+    }
+    map
 }
 
 #[inline(always)]
@@ -98,17 +113,18 @@ fn extract_fields<'a>(
     prev: &mut usize,
     pos: usize,
     mut combined: u64,
-) -> Vec<&'a [u8]> {
-    let mut v = vec![];
+    v: &mut [&'a [u8]; 32],
+    count: &mut usize,
+) {
     while combined != 0 {
         let i = combined.trailing_zeros() as usize;
         let current = pos + i;
         let field = unsafe { data.get_unchecked(*prev..current) };
-        v.push(field);
+        v[*count] = field;
         *prev = current + 1;
         combined &= combined - 1;
+        *count += 1;
     }
-    v
 }
 
 #[allow(dead_code)]
@@ -151,11 +167,14 @@ fn get_map_rayon(bytes: &[u8]) -> BTreeMap<&[u8], Weather> {
         .map(|bytes| parse(bytes))
         .reduce_with(|mut acc, other| {
             for (station, measurement) in other {
-                let entry = acc.entry(station).or_default();
-                entry.total += measurement.total;
-                entry.min = entry.min.min(measurement.min);
-                entry.max = entry.max.max(measurement.max);
-                entry.sum += measurement.sum;
+                acc.entry(station)
+                    .and_modify(|entry| {
+                        entry.total += measurement.total;
+                        entry.min = entry.min.min(measurement.min);
+                        entry.max = entry.max.max(measurement.max);
+                        entry.sum += measurement.sum;
+                    })
+                    .or_insert(measurement);
             }
             acc
         })
@@ -175,9 +194,9 @@ fn main() {
         write!(
             stdout,
             "={:.1}/{:.1}/{:.1}",
-            stats.min,
-            stats.sum / stats.total as f32,
-            stats.max,
+            stats.min as f32 * 0.1,
+            (stats.sum as f64 / stats.total as f64) * 0.1,
+            stats.max as f32 * 0.1,
         )
         .unwrap();
         if map.peek().is_some() {
