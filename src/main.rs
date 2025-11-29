@@ -3,19 +3,21 @@
 #![feature(rustc_private)]
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     fs::File,
     io::Write,
     os::fd::AsRawFd,
     simd::{Mask, Simd, cmp::SimdPartialEq},
 };
 
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+
 #[derive(Default)]
 struct Weather {
     total: usize,
-    min: f64,
-    max: f64,
-    sum: f64,
+    min: f32,
+    max: f32,
+    sum: f32,
 }
 
 fn open_reader(file: &str) -> &[u8] {
@@ -45,7 +47,7 @@ const CHUNK_SIZE: usize = 64;
 const SIMD_NEWLINE: Simd<u8, CHUNK_SIZE> = Simd::splat(b'\n');
 const SIMD_DELIM: Simd<u8, CHUNK_SIZE> = Simd::splat(b';');
 
-fn parse<'a>(data: &'a [u8]) -> HashMap<&'a [u8], Weather> {
+fn parse<'a>(data: &'a [u8]) -> fxhash::FxHashMap<&'a [u8], Weather> {
     let mut prev = 0;
     let mut pos = 0;
     let (chunks, remainder) = data.as_chunks();
@@ -64,20 +66,27 @@ fn parse<'a>(data: &'a [u8]) -> HashMap<&'a [u8], Weather> {
         .map(|[station, measurement]| {
             (
                 station,
-                std::str::from_utf8(measurement)
-                    .unwrap()
-                    .parse::<f64>()
+                unsafe { std::str::from_utf8_unchecked(measurement) }
+                    .parse::<f32>()
                     .unwrap(),
             )
         })
         .fold(
-            HashMap::<&'a [u8], Weather>::new(),
+            fxhash::FxHashMap::<&'a [u8], Weather>::default(),
             |mut acc, (station, measurement)| {
-                let entry = acc.entry(station).or_default();
-                entry.total += 1;
-                entry.min = entry.min.min(measurement);
-                entry.max = entry.max.max(measurement);
-                entry.sum += measurement;
+                acc.entry(station)
+                    .and_modify(|entry| {
+                        entry.total += 1;
+                        entry.min = entry.min.min(measurement);
+                        entry.max = entry.max.max(measurement);
+                        entry.sum += measurement;
+                    })
+                    .or_insert(Weather {
+                        total: 1,
+                        min: measurement,
+                        max: measurement,
+                        sum: measurement,
+                    });
                 acc
             },
         )
@@ -102,12 +111,62 @@ fn extract_fields<'a>(
     v
 }
 
-fn main() {
-    let mut map = parse(open_reader("data/measurements.txt"))
+#[allow(dead_code)]
+fn get_map(bytes: &[u8]) -> BTreeMap<&[u8], Weather> {
+    parse(bytes).into_iter().collect::<BTreeMap<_, _>>()
+}
+
+#[allow(dead_code)]
+fn get_map_rayon(bytes: &[u8]) -> BTreeMap<&[u8], Weather> {
+    let num_threads = rayon::current_num_threads();
+    let len = bytes.len();
+    let block_size = len / num_threads;
+
+    let mut blocks = vec![Default::default(); num_threads];
+    let mut start = 0;
+    for (i, block) in blocks.iter_mut().enumerate().take(num_threads - 1) {
+        let approx_end = (i + 1) * block_size;
+        let search_slice = &bytes[start..approx_end];
+        let offset = unsafe {
+            let n = libc::memrchr(
+                search_slice.as_ptr() as *const libc::c_void,
+                b'\n' as libc::c_int,
+                search_slice.len(),
+            ) as *const u8;
+            if n.is_null() {
+                panic!("No newline found!")
+            } else {
+                n.offset_from(search_slice.as_ptr()) as usize + 1
+            }
+        };
+
+        let end = start + offset;
+        *block = &bytes[start..end];
+        start = end;
+    }
+    blocks[num_threads - 1] = &bytes[start..];
+
+    blocks
+        .into_par_iter()
+        .map(|bytes| parse(bytes))
+        .reduce_with(|mut acc, other| {
+            for (station, measurement) in other {
+                let entry = acc.entry(station).or_default();
+                entry.total += measurement.total;
+                entry.min = entry.min.min(measurement.min);
+                entry.max = entry.max.max(measurement.max);
+                entry.sum += measurement.sum;
+            }
+            acc
+        })
+        .unwrap()
         .into_iter()
         .collect::<BTreeMap<_, _>>()
-        .into_iter()
-        .peekable();
+}
+
+fn main() {
+    let bytes = open_reader("data/measurements.txt");
+    let mut map = get_map_rayon(bytes).into_iter().peekable();
 
     let mut stdout = std::io::stdout().lock();
     stdout.write_all(b"{").unwrap();
@@ -117,7 +176,7 @@ fn main() {
             stdout,
             "={:.1}/{:.1}/{:.1}",
             stats.min,
-            stats.sum / stats.total as f64,
+            stats.sum / stats.total as f32,
             stats.max,
         )
         .unwrap();

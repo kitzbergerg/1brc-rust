@@ -6,7 +6,4 @@ panic = "abort"
 debug = true
 
 [build]
-rustflags = ["-C", "target-cpu=native", "-C", "force-frame-pointers"]
-
-[unstable]
-build-std = ["libc", "core", "std", "alloc", "panic_abort"]
+rustflags = ["-Ctarget-cpu=native", "-Cforce-frame-pointers=yes"]
