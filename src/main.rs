@@ -39,7 +39,7 @@ fn get_map(bytes: &[u8]) -> BTreeMap<&[u8], Weather> {
 }
 
 #[allow(dead_code)]
-fn get_map_rayon(bytes: &[u8]) -> BTreeMap<&[u8], Weather> {
+fn get_map_par(bytes: &[u8]) -> BTreeMap<&[u8], Weather> {
     let num_threads = rayon::current_num_threads();
     let len = bytes.len();
     let block_size = len / num_threads;
@@ -91,7 +91,7 @@ fn get_map_rayon(bytes: &[u8]) -> BTreeMap<&[u8], Weather> {
 
 fn main() {
     let bytes = open_reader("data/measurements.txt");
-    let mut map = get_map_rayon(bytes).into_iter().peekable();
+    let mut map = get_map_par(bytes).into_iter().peekable();
 
     let mut stdout = std::io::stdout().lock();
     stdout.write_all(b"{").unwrap();
