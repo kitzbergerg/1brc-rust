@@ -12,6 +12,10 @@ use std::{
 
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
+use crate::hash::MyHashMap;
+
+mod hash;
+
 struct Weather {
     total: u32,
     min: i16,
@@ -61,7 +65,7 @@ const CHUNK_SIZE: usize = 64;
 const SIMD_NEWLINE: Simd<u8, CHUNK_SIZE> = Simd::splat(b'\n');
 const SIMD_DELIM: Simd<u8, CHUNK_SIZE> = Simd::splat(b';');
 
-fn parse<'a>(data: &'a [u8]) -> fxhash::FxHashMap<&'a [u8], Weather> {
+fn parse<'a>(data: &'a [u8]) -> MyHashMap<&'a [u8], Weather> {
     let mut prev = 0;
     let mut pos = 0;
     let (chunks, remainder) = data.as_chunks();
@@ -69,11 +73,11 @@ fn parse<'a>(data: &'a [u8]) -> fxhash::FxHashMap<&'a [u8], Weather> {
     let mut iter = chunks
         .iter()
         .map(|chunk| Simd::from_array(*chunk))
-        .chain([Simd::load_or_default(remainder)])
+        .chain(std::iter::once(Simd::load_or_default(remainder)))
         .map(|chunk| chunk.simd_eq(SIMD_NEWLINE) | chunk.simd_eq(SIMD_DELIM))
         .map(Mask::to_bitmask);
 
-    let mut map = fxhash::FxHashMap::<&'a [u8], Weather>::default();
+    let mut map = MyHashMap::<&'a [u8], Weather>::default();
     let mut buf = [&[][..]; 64];
     let mut count = 0;
     'outer: loop {
@@ -193,7 +197,7 @@ fn get_map_rayon(bytes: &[u8]) -> BTreeMap<&[u8], Weather> {
 
 fn main() {
     let bytes = open_reader("data/measurements.txt");
-    let mut map = get_map(bytes).into_iter().peekable();
+    let mut map = get_map_rayon(bytes).into_iter().peekable();
 
     let mut stdout = std::io::stdout().lock();
     stdout.write_all(b"{").unwrap();
