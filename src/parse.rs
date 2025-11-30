@@ -94,7 +94,7 @@ fn extract_fields<'a>(
     buf: &mut [&'a [u8]; 128],
     count: &mut usize,
 ) {
-    while combined != 0 {
+    for _ in 0..combined.count_ones() {
         let i = combined.trailing_zeros() as usize;
         let current = pos + i;
         unsafe { *buf.get_unchecked_mut(*count) = data.get_unchecked(*prev..current) };
