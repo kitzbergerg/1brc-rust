@@ -30,13 +30,13 @@ fn open_reader(file: &str) -> &[u8] {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(not(feature = "parallel"))]
 fn get_map(bytes: &[u8]) -> BTreeMap<&[u8], Weather> {
     parse(bytes).into_iter().collect::<BTreeMap<_, _>>()
 }
 
-#[allow(dead_code)]
-fn get_map_par(bytes: &[u8]) -> BTreeMap<&[u8], Weather> {
+#[cfg(feature = "parallel")]
+fn get_map(bytes: &[u8]) -> BTreeMap<&[u8], Weather> {
     let num_threads = std::thread::available_parallelism().unwrap().get();
     let len = bytes.len();
     let block_size = len / num_threads;
@@ -95,7 +95,7 @@ fn get_map_par(bytes: &[u8]) -> BTreeMap<&[u8], Weather> {
 fn main() {
     let file_name = std::env::args().nth(1).unwrap();
     let bytes = open_reader(&file_name);
-    let mut map = get_map_par(bytes).into_iter().peekable();
+    let mut map = get_map(bytes).into_iter().peekable();
 
     let mut stdout = std::io::stdout().lock();
     stdout.write_all(b"{").unwrap();

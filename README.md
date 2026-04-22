@@ -28,8 +28,7 @@ Run with: `cargo r -r data/measurements.txt`
 
 ## Running
 
-There are two function `get_map` and `get_map_par`.
-For implementing improvements use `get_map`. This results in cleaner asm and easier debugging.
+For implementing improvements use the single-threaded version `cargo b -r --no-default-features`. This results in cleaner asm and easier debugging.
 For the final evaluation use the parallel version.
 
 ## Helpers
