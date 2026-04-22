@@ -3,7 +3,7 @@ codegen-units = 1
 opt-level = 3
 lto = "fat"
 panic = "abort"
-debug = true
+debug = false
 
 [build]
-rustflags = ["-Ctarget-cpu=native", "-Cforce-frame-pointers=yes"]
+rustflags = ["-Ctarget-cpu=native"]

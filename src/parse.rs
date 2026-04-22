@@ -42,7 +42,7 @@ pub fn parse<'a>(data: &'a [u8]) -> MyHashMap<&'a [u8], Weather> {
         .map(Mask::to_bitmask);
 
     let mut map = MyHashMap::<&'a [u8], Weather>::default();
-    let mut buf = [&[][..]; 128];
+    let mut buf = [Default::default(); 128];
     let mut count = 0;
     'outer: loop {
         // fill buffer

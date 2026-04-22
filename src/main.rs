@@ -1,10 +1,7 @@
 #![feature(portable_simd)]
-#![feature(iter_array_chunks)]
 #![feature(rustc_private)]
 
 use std::{collections::BTreeMap, fs::File, io::Write, os::fd::AsRawFd};
-
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::parse::{Weather, parse};
 
@@ -40,7 +37,7 @@ fn get_map(bytes: &[u8]) -> BTreeMap<&[u8], Weather> {
 
 #[allow(dead_code)]
 fn get_map_par(bytes: &[u8]) -> BTreeMap<&[u8], Weather> {
-    let num_threads = rayon::current_num_threads();
+    let num_threads = std::thread::available_parallelism().unwrap().get();
     let len = bytes.len();
     let block_size = len / num_threads;
 
@@ -68,12 +65,19 @@ fn get_map_par(bytes: &[u8]) -> BTreeMap<&[u8], Weather> {
     }
     blocks[num_threads - 1] = &bytes[start..];
 
-    blocks
-        .into_par_iter()
-        .map(|bytes| parse(bytes))
-        .reduce_with(|mut acc, other| {
+    let mut stats: BTreeMap<&[u8], Weather> = BTreeMap::new();
+    std::thread::scope(|scope| {
+        let (tx, rx) = std::sync::mpsc::sync_channel(num_threads);
+        blocks.into_iter().for_each(|bytes| {
+            let tx = tx.clone();
+            scope.spawn(move || tx.send(parse(bytes)));
+        });
+        drop(tx);
+
+        for other in rx {
             for (station, measurement) in other {
-                acc.entry(station)
+                stats
+                    .entry(station)
                     .and_modify(|entry| {
                         entry.total += measurement.total;
                         entry.min = entry.min.min(measurement.min);
@@ -82,15 +86,15 @@ fn get_map_par(bytes: &[u8]) -> BTreeMap<&[u8], Weather> {
                     })
                     .or_insert(measurement);
             }
-            acc
-        })
-        .unwrap()
-        .into_iter()
-        .collect::<BTreeMap<_, _>>()
+        }
+    });
+
+    stats
 }
 
 fn main() {
-    let bytes = open_reader("data/measurements.txt");
+    let file_name = std::env::args().nth(1).unwrap();
+    let bytes = open_reader(&file_name);
     let mut map = get_map_par(bytes).into_iter().peekable();
 
     let mut stdout = std::io::stdout().lock();
